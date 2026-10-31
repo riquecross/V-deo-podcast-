@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """V4 storytelling video engine. Usage: python3 v4video.py <step> <work_dir>
-Steps: setup | transcribe | faces | cropcheck | clips | audio | music | overlay | compose | qa | light
+Steps: setup | prep (transcribe+faces in parallel) | transcribe | faces | cropcheck | clips | audio | music | overlay | compose | qa | light
 All project data lives in <work_dir>/config.json (see SKILL.md)."""
 import glob, json, os, subprocess, sys
 
@@ -67,7 +67,10 @@ def transcribe():
     run("ffmpeg", "-v", "error", "-y", "-i", SRC, "-vn", "-c:a", "pcm_s16le", f"{WD}/audio_full.wav")
     w = wave.open(f"{WD}/audio16k.wav")
     a = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
-    model = WhisperModel(cfg.get("whisper", "medium"), device="cpu", compute_type="int8")
+    # long episodes: lighter model (~2-3x faster on CPU); names/jargon get fixed later via cfg["fixes"]
+    size = cfg.get("whisper") or ("small" if probe()[2] > 30 * 60 else "medium")
+    print(f"whisper model: {size}", flush=True)
+    model = WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 2)
     segs, _ = model.transcribe(a, language="pt", word_timestamps=True, vad_filter=True, beam_size=5)
     words, lines = [], []
     for s in segs:
@@ -76,6 +79,16 @@ def transcribe():
     json.dump(words, open(f"{WD}/words.json", "w"), ensure_ascii=False)
     open(f"{WD}/transcript.txt", "w").write("\n".join(lines))
     print("\n".join(lines))
+
+def prep():
+    """Run transcribe and faces at the same time (faces is light: one ffmpeg seek per frame)."""
+    me = os.path.abspath(__file__)
+    f = subprocess.Popen([sys.executable, me, "faces", WD], stdout=open(f"{WD}/faces.log", "w"), stderr=subprocess.STDOUT)
+    transcribe()
+    f.wait()
+    print(open(f"{WD}/faces.log").read())
+    if f.returncode:
+        raise SystemExit("faces failed, see faces.log")
 
 def faces():
     import cv2, numpy as np
@@ -391,5 +404,5 @@ def light():
         out.replace(".mp4", "_leve.mp4"))
     print("LIGHT_OK", out.replace(".mp4", "_leve.mp4"))
 
-{"setup": setup, "transcribe": transcribe, "faces": faces, "cropcheck": cropcheck, "clips": clips, "audio": audio, "music": music,
+{"setup": setup, "prep": prep, "transcribe": transcribe, "faces": faces, "cropcheck": cropcheck, "clips": clips, "audio": audio, "music": music,
  "overlay": overlay, "compose": compose, "qa": qa, "light": light}[STEP]()
